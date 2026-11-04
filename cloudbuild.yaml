@@ -1,0 +1,64 @@
+# Cloud Build pipeline: test -> build image -> push to Artifact Registry -> deploy to Cloud Run.
+#
+# Trigger this from a GitHub push (Cloud Build GitHub trigger) or run manually:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions _REGION=us-central1,_SERVICE=task-tracker,_REPO=apps
+#
+# Required IAM for the Cloud Build service account:
+#   roles/run.admin, roles/iam.serviceAccountUser (on the runtime SA),
+#   roles/artifactregistry.writer
+substitutions:
+  _REGION: us-central1
+  _SERVICE: task-tracker
+  _REPO: apps
+
+options:
+  logging: GCS_ONLY
+
+steps:
+  # 1. Unit + web-layer tests in the same Maven image the Dockerfile uses.
+  - id: test
+    name: maven:3.9-eclipse-temurin-21
+    entrypoint: mvn
+    args: ['-B', 'test']
+
+  # 2. Build the container image (the Dockerfile re-runs tests during verify).
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest'
+      - '.'
+
+  # 3. Push both tags to Artifact Registry.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}'
+
+  # 4. Deploy the exact image built in this run to Cloud Run.
+  #    The runtime service account and the API_TOKEN secret are provisioned
+  #    by Terraform in infra/ — Cloud Build only rolls out new revisions.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - '${_SERVICE}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA'
+      - '--region=${_REGION}'
+      - '--service-account=${_SERVICE}-run@$PROJECT_ID.iam.gserviceaccount.com'
+      - '--set-secrets=API_TOKEN=api-token:latest'
+      - '--min-instances=0'
+      - '--max-instances=4'
+      - '--allow-unauthenticated'
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest'

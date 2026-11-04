@@ -1,0 +1,11 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+infra/.terraform/
+infra/*.tfstate*
+infra/.terraform.lock.hcl
+*.tfvars
+!infra/terraform.tfvars.example
+.DS_Store
